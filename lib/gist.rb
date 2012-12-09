@@ -103,7 +103,7 @@ module Gist
           files.push({
             :input     => File.read(file),
             :filename  => file,
-            :extension => (File.extname(file) if file.include?('.'))
+            :extension => (File.extname(file).downcase if file.include?('.'))
           })
         end
 
@@ -138,6 +138,31 @@ module Gist
     http.ca_file = ca_cert
 
     req = Net::HTTP::Post.new(url.path)
+
+    # support some binary format
+    support_ext = %w(.jpg .png .gif)
+    files_binary = []
+    files.delete_if do |element|
+      if support_ext.member?(element[:extension])
+        files_binary.push(element)
+        true
+      else
+        element[:filename] = File::basename(element[:filename])
+        false
+      end
+    end
+    has_binary = files_binary.size > 0
+    if has_binary
+      # only binary files
+      if (files.size == 0)
+        # add keep file
+        files.push({
+                     :input     => %q(this is keep file),
+                     :filename  => '.gitkeep',
+                   })
+      end
+    end
+
     req.body = JSON.generate(data(files, private_gist, description))
 
     user, password = auth()
@@ -148,7 +173,25 @@ module Gist
     response = http.start{|h| h.request(req) }
     case response
     when Net::HTTPCreated
-      JSON.parse(response.body)['html_url']
+      res = JSON.parse(response.body)
+      if has_binary
+        id = res['id']
+        clone_url = "git@gist.github.com:#{id}.git"
+        clone_dir = "/tmp/gist-#{id}"
+        `git clone #{clone_url} #{clone_dir}`
+        files_binary.each do |file|
+          file_path = file[:filename]
+          file_name = File::basename(file_path)
+          `cp #{file_path} #{File.join(clone_dir, file_name)}`
+        end
+        Dir.chdir(clone_dir) do
+          `git add .`
+          `git rm .gitkeep` if File.exists?('.gitkeep')
+          `git commit -m 'add binary file'`
+          `git push origin master`
+        end
+      end
+      res['html_url']
     else
       puts "Creating gist failed: #{response.code} #{response.message}"
       exit(false)
